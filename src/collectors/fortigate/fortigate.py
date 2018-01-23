@@ -83,14 +83,9 @@ class.  For example, a collector called
 
 """
 
-import diamond.collector
-import sys
-import os
-import pprint
-import json
-import pexpect
-import yaml
 import logging
+
+import diamond.collector
 
 try:
     from fortiosapi import FortiOSAPI
@@ -109,6 +104,8 @@ logger.setLevel(logging.DEBUG)
 fgt = FortiOSAPI()
 fgt.debug('on')
 
+
+# TODO https://diamond.readthedocs.io/en/latest/collectors/SNMPInterfaceCollector/ get inspired and create a list of fortigate in the conf
 class FortigateCollector(diamond.collector.Collector):
 
     def get_default_config_help(self):
@@ -139,12 +136,14 @@ class FortigateCollector(diamond.collector.Collector):
         super(FortigateCollector, self).__init__(*args, **kwargs)
         if fortiosapi is None:
             self.log.error("Unable to import fortiosapi python module")
-            return {}
-        if self.config['https'] == ("false" or "no"):
+            exit(2)
+        if self.config['https'] == 'false':
             fgt.https('off')
         else:
             fgt.https('on')
         fgt.login(self.config['hostname'], self.config['user'], self.config['password'])
+        # Log
+        self.log.info("Login successfull for : %s", self.config['hostname'])
 
 
     def collect(self):
@@ -153,10 +152,6 @@ class FortigateCollector(diamond.collector.Collector):
         """
 
         metrics = fgt.monitor('system','vdom-resource', mkey='select', vdom=self.config['vdom'])['results']
-        # Set Metric Name
-        metric_name = "my.example.metric"
-        # Set Metric Value
-        metric_value = 42
 
         self.publish("cpu", metrics['cpu'])
         self.publish("memory", metrics['memory'])
