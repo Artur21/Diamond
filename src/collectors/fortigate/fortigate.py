@@ -7,69 +7,32 @@ A collector for Fortinet Fortigate
 
  * fortiosapi (on pypi)
 
-#### Customizing a collector
+#### Configuring FortigateCollector
 
-Diamond collectors run within the diamond process and collect metrics that can
-be published to a graphite server.
+The configuration format is as follow:
+        # Options for FortigatesCollector
+        path = fortinet
+        interval = 9
 
-Collectors are subclasses of diamond.collector.Collector. In their simplest
-form, they need to implement a single method called "collect".
+        [devices]
 
-    import diamond.collector
+        [[fgt1]]
+        hostname = 10.10.10.125
+        user = admin
+        password = toto
+        vdom = root
+        https = true
 
-    class FortigateCollector(diamond.collector.Collector):
+        [[router2]]
+        hostname = 10.10.10.74
+        user = admin
+        password =
+        vdom = root
+        https = false
 
-        def collect(self):
+Allowing to monitor multiple fortigate devices
 
-            # Set Metric Path. By default it will be the collector's name
-            # (servers.hostname.FortigateCollector.my.example.metric)
-            self.config.update({
-                'path':     'example',
-            })
-
-            # Set Metric Name
-            metric_name = "my.example.metric"
-
-            # Set Metric Value
-            metric_value = 42
-
-            # Publish Metric
-            self.publish(metric_name, metric_value)
-
-For testing collectors, create a directory (example below for /tmp/diamond)
-containing your new collector(s), their .conf files, and a copy of diamond.conf
-with the following options in diamond.conf:
-
-    [server]
-
-    user = ecuser
-    group = ecuser
-
-    handlers = diamond.handler.archive.ArchiveHandler
-    handlers_config_path = /tmp/diamond/handlers/
-    collectors_path = /tmp/diamond/collectors/
-    collectors_config_path = /tmp/diamond/collectors/
-
-    collectors_reload_interval = 3600
-
-    [handlers]
-
-    [[default]]
-
-    [[ArchiveHandler]]
-    log_file = /dev/stdout
-
-    [collectors]
-    [[default]]
-
-and then run diamond in foreground mode:
-
-    # diamond -f -l --skip-pidfile -c /tmp/diamond/diamond.conf
-
-Diamond supports dynamic addition of collectors. Its configured to scan for new
-collectors on a regular interval (configured in diamond.cfg).
-If diamond detects a new collector, or that a collectors module has changed
-(based on the file's mtime), it will be reloaded.
+For testing collectors etc refer to the example collector documentation.
 
 Diamond looks for collectors in /usr/lib/diamond/collectors/ (on Ubuntu). By
 default diamond will invoke the *collect* method every 60 seconds.
@@ -84,6 +47,7 @@ class.  For example, a collector called
 """
 
 import logging
+from packaging.version import Version
 
 import diamond.collector
 
@@ -101,16 +65,14 @@ hdlr.setFormatter(formatter)
 logger.addHandler(hdlr)
 logger.setLevel(logging.DEBUG)
 
-fgt = FortiOSAPI()
-fgt.debug('on')
+fortigateList = []
 
-
-# TODO https://diamond.readthedocs.io/en/latest/collectors/SNMPInterfaceCollector/ get inspired and create a list of fortigate in the conf
 class FortigateCollector(diamond.collector.Collector):
 
     def get_default_config_help(self):
         config_help = super(FortigateCollector, self).get_default_config_help()
         config_help.update({
+            '[[fortigate1]]'
             'hostname': 'Hostname or IP to collect from',
             'user': 'Username',
             'password': 'Password',
@@ -125,11 +87,8 @@ class FortigateCollector(diamond.collector.Collector):
         """
         config = super(FortigateCollector, self).get_default_config()
         config.update({
-            'user':     'admin',
-            'https': 'true',
-            'vdom': 'root',
-            'password' : ''
         })
+
         return config
 
     def __init__(self, *args, **kwargs):
@@ -137,23 +96,36 @@ class FortigateCollector(diamond.collector.Collector):
         if fortiosapi is None:
             self.log.error("Unable to import fortiosapi python module")
             exit(2)
-        if self.config['https'] == 'false':
-            fgt.https('off')
-        else:
-            fgt.https('on')
-        fgt.login(self.config['hostname'], self.config['user'], self.config['password'])
-        # Log
-        self.log.info("Login successfull for : %s", self.config['hostname'])
+        # config is now a list that we map to fortigateList list of objects.
+        for fgtconf in self.config['devices']:
+            self.log.info("device : %s", self.config['devices'][fgtconf])
+            # create a FortiosAPI objects in the list:
+            fortigateList.append(FortiOSAPI())
+            if self.config['devices'][fgtconf]['https'] == 'false':
+                fortigateList[-1].https('off')
+            else:
+                fortigateList[-1].https('on')
+            fortigateList[-1].login(self.config['devices'][fgtconf]['hostname'],
+                                    self.config['devices'][fgtconf]['user'],
+                                    self.config['devices'][fgtconf]['password'])
+            # Log
+            self.log.info("Login successfull for : %s", self.config['devices'][fgtconf]['hostname'])
 
 
     def collect(self):
         """
         Overrides the Collector.collect method
         """
-
-        metrics = fgt.monitor('system','vdom-resource', mkey='select', vdom=self.config['vdom'])['results']
-
-        self.publish("cpu", metrics['cpu'])
-        self.publish("memory", metrics['memory'])
-        self.publish("sessions", metrics['session']['current_usage'])
-
+        for fgt in fortigateList:
+            metrics = fgt.monitor('system', 'vdom-resource',
+                                  mkey='select', vdom='root')['results']
+            # TODO allow different vdom per devices
+            # try to change the hostname in the output
+            self.config['hostname'] = fgt.host
+            self.publish("cpu", metrics['cpu'])
+            self.publish("memory", metrics['memory'])
+            self.publish("setup_rate", metrics['setup_rate'])
+            if Version(fgt.get_version()) > Version('5.6'):
+                self.publish("sessions", metrics['session']['current_usage'])
+            else:
+                self.publish("sessions", metrics['sessions'])
